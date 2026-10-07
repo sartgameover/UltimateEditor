@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Ultimate Video Editor
+Comment=Видеоредактор
+Exec=uve
+Icon=ultimate-video-editor
+Categories=AudioVideo;Video;AudioVideoEditing;
+MimeType=application/x-uvmvideos;
+Terminal=false
