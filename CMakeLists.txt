@@ -37,6 +37,9 @@ add_executable(uve
   src/Branding.cpp
   src/StartScreen.cpp
   src/Installer.cpp
+  src/Theme.cpp
+  src/Fonts.cpp
+  src/ExtraPanels.cpp
 )
 target_link_libraries(uve PRIVATE Qt6::Widgets Qt6::OpenGL Qt6::OpenGLWidgets Qt6::Multimedia PkgConfig::FFMPEG)
 target_compile_definitions(uve PRIVATE UVE_SOURCE_DIR=\"${CMAKE_SOURCE_DIR}\")

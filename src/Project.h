@@ -9,8 +9,10 @@
 #include <vector>
 
 // ---------- ключевые кадры ----------
-struct Keyframe { double t = 0, v = 0; int mode = 0; };   // mode: 0 linear, 1 ease, 2 hold
+// mode: 0 linear, 1 ease (smoothstep), 2 hold, 3 cubic-bezier(c1x,c1y,c2x,c2y) — гибкая кривая как в After Effects / CSS
+struct Keyframe { double t = 0, v = 0; int mode = 0; double c1x = 0.42, c1y = 0, c2x = 0.58, c2y = 1; };
 typedef QVector<Keyframe> KeyList;
+double cubicBezierY(double x, double c1x, double c1y, double c2x, double c2y);   // кривая плавности: x∈[0,1] -> y
 double evalKeys(const KeyList& k, double t, double def);
 void setKey(KeyList& k, double t, double v, int mode = 0);
 
@@ -33,9 +35,19 @@ struct Clip {
     std::vector<EffectInst> effects;
     QString textColor = "#ffffff";                     // стиль текста
     double textSize = 1.0;
+    QString textFont;                                  // "" — по умолчанию, "UVF:Имя" — свой штриховой шрифт
+    bool textBold = true, textItalic = false, textShadow = false;
+    double textOutline = 2.0;
+    QString textOutlineColor = "#000000";
+    int textAlign = 1;                                 // 0 слева, 1 по центру, 2 справа
     double fadeIn = 0, fadeOut = 0;                    // затухание в начале/конце (сек): картинка или звук
     QString animIn, animOut, animLoop;                 // анимации (см. Effects.h)
     double animInDur = 0.8, animOutDur = 0.8;
+    // настройки анимаций: угол (направление или градусы поворота 0..360), сила, кривая плавности (cubic-bezier)
+    double animInAngle = 0, animOutAngle = 0, animLoopAngle = 0;
+    double animInAmt = 1, animOutAmt = 1, animLoopAmt = 1;
+    double animInC[4] = {0.42, 0, 0.58, 1};
+    double animOutC[4] = {0.42, 0, 0.58, 1};
     double end() const { return start + dur; }
     double prop(const QString& n, double local) const;
     double fadeFactor(double local) const;
@@ -65,6 +77,8 @@ public:
     QList<Marker> markers;
     int fps = 30, W = 1280, H = 720, nextId = 1;
     QString path;
+    QString notes;                                             // заметки к проекту
+    QString bgColor = "#000000";                               // фон кадра
     // микшер
     QMap<QString, double> trackGain;
     QMap<QString, bool> mute, solo;

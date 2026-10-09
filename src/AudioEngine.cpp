@@ -7,6 +7,7 @@
 #include <QMediaDevices>
 #include <QIODevice>
 #include <QFile>
+#include "AppSettings.h"
 #include <QMetaObject>
 #include <map>
 #include <mutex>
@@ -109,21 +110,22 @@ void AudioMixerCore::render(float* out, int frames) {
         const ATrack& tr = it.value();
         if (!tr.fx.empty()) trackChains[it.key()].process(b.data(), frames, tr.fx, t0);
         double th = (tr.pan + 1.0) * M_PI / 4.0;
-        float gl = (float)(tr.gain * std::cos(th) * M_SQRT2), gr = (float)(tr.gain * std::sin(th) * M_SQRT2), pk = 0.f;
+        float gl = (float)(tr.gain * std::cos(th) * M_SQRT2), gr = (float)(tr.gain * std::sin(th) * M_SQRT2), pkl = 0.f, pkr = 0.f;
         for (int i = 0; i < frames; ++i) {
             float l = b[2 * i] * gl, r = b[2 * i + 1] * gr;
-            pk = std::max(pk, std::max(std::fabs(l), std::fabs(r)));
+            pkl = std::max(pkl, std::fabs(l)); pkr = std::max(pkr, std::fabs(r));
             out[2 * i] += l; out[2 * i + 1] += r;
         }
-        lv[it.key()] = pk;
+        lv[it.key()] = std::max(pkl, pkr); lv[it.key() + ":L"] = pkl; lv[it.key() + ":R"] = pkr;
     }
     if (!snap->master.fx.empty()) masterChain.process(out, frames, snap->master.fx, t0);
-    float mg = (float)snap->master.gain, mpk = 0.f;
+    float mg = (float)snap->master.gain, mpkl = 0.f, mpkr = 0.f;
     for (int i = 0; i < frames * 2; ++i) {
         float v = std::min(std::max(out[i] * mg, -1.0f), 1.0f);
-        out[i] = v; mpk = std::max(mpk, std::fabs(v));
+        out[i] = v;
+        if (i & 1) mpkr = std::max(mpkr, std::fabs(v)); else mpkl = std::max(mpkl, std::fabs(v));
     }
-    lv["Master"] = mpk;
+    lv["Master"] = std::max(mpkl, mpkr); lv["Master:L"] = mpkl; lv["Master:R"] = mpkr;
     levels = lv;
     pos = t1;
 }
@@ -181,9 +183,13 @@ public slots:
         QAudioFormat f;
         f.setSampleRate(48000); f.setChannelCount(2); f.setSampleFormat(QAudioFormat::Int16);
         QAudioDevice d = QMediaDevices::defaultAudioOutput();
+        const QByteArray wanted = AppSettings::audioOutputId();            // устройство вывода из настроек
+        if (!wanted.isEmpty())
+            for (const QAudioDevice& o : QMediaDevices::audioOutputs()) if (o.id() == wanted) d = o;
+        const int latMs = qBound(20, AppSettings::audioLatencyMs(), 500);
         sink = new QAudioSink(d, f, this);
-        sink->setBufferSize((int)f.bytesForDuration(80000));
-        dev->latency = 0.08;
+        sink->setBufferSize((int)f.bytesForDuration((qint64)latMs * 1000));
+        dev->latency = latMs / 1000.0;
         sink->start(dev);
     }
     void shutdown() {

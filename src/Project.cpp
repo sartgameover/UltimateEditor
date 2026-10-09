@@ -5,6 +5,8 @@
 #include <QJsonDocument>
 #include <QFile>
 #include <algorithm>
+#include <cmath>
+#include "AppSettings.h"
 
 bool isVideoTrack(const QString& t) { return t.startsWith('V'); }
 
@@ -25,6 +27,26 @@ QString mediaKind(const QString& path) {
 }
 
 // ---------- keyframes ----------
+double cubicBezierY(double x, double x1, double y1, double x2, double y2) {
+    x = qBound(0.0, x, 1.0);
+    auto bx = [&](double t) { double s = 1 - t; return 3 * s * s * t * x1 + 3 * s * t * t * x2 + t * t * t; };
+    auto by = [&](double t) { double s = 1 - t; return 3 * s * s * t * y1 + 3 * s * t * t * y2 + t * t * t; };
+    auto dbx = [&](double t) { double s = 1 - t; return 3 * s * s * x1 + 6 * s * t * (x2 - x1) + 3 * t * t * (1 - x2); };
+    double t = x;
+    for (int i = 0; i < 8; ++i) {
+        double e = bx(t) - x;
+        if (std::fabs(e) < 1e-6) break;
+        double d = dbx(t);
+        if (std::fabs(d) < 1e-6) break;
+        t -= e / d;
+    }
+    if (t < 0 || t > 1 || std::fabs(bx(t) - x) > 1e-4) {              // запасной вариант — деление пополам
+        double lo = 0, hi = 1; t = x;
+        for (int i = 0; i < 30; ++i) { if (bx(t) < x) lo = t; else hi = t; t = (lo + hi) / 2; }
+    }
+    return by(t);
+}
+
 double evalKeys(const KeyList& k, double t, double def) {
     if (k.isEmpty()) return def;
     if (t <= k.first().t) return k.first().v;
@@ -36,6 +58,7 @@ double evalKeys(const KeyList& k, double t, double def) {
             double u = (t - a.t) / qMax(b.t - a.t, 1e-9);
             if (a.mode == 2) return a.v;
             if (a.mode == 1) u = u * u * (3 - 2 * u);
+            else if (a.mode == 3) u = cubicBezierY(u, a.c1x, a.c1y, a.c2x, a.c2y);
             return a.v + (b.v - a.v) * u;
         }
     }
@@ -126,7 +149,7 @@ Asset* Project::addAsset(const QString& p) {
     if (kind.isEmpty()) return nullptr;
     Asset a; a.id = nextId++; a.path = p; a.kind = kind;
     if (kind == "image") {
-        a.duration = 5;
+        a.duration = AppSettings::imageDuration();
     } else {
         MediaInfo mi = probeMedia(p);
         a.duration = mi.duration; a.hasAudio = (kind == "audio") || mi.hasAudio; a.w = mi.w; a.h = mi.h;
@@ -137,7 +160,7 @@ Asset* Project::addAsset(const QString& p) {
 
 QList<ClipPtr> Project::addClipsForAsset(const Asset& a, double t, const QString& trackIn) {
     QList<ClipPtr> out;
-    double dur = a.kind == "image" ? 5.0 : a.duration;
+    double dur = a.kind == "image" ? AppSettings::imageDuration() : a.duration;
     QString track = trackIn;
     auto mk = [&](const QString& tr, const QString& kind, int link) {
         ClipPtr c = std::make_shared<Clip>();
@@ -226,7 +249,7 @@ static QJsonObject keysToJson(const QMap<QString, KeyList>& m) {
     QJsonObject o;
     for (auto it = m.constBegin(); it != m.constEnd(); ++it) {
         QJsonArray a;
-        for (const Keyframe& k : it.value()) a.append(QJsonArray{k.t, k.v, k.mode});
+        for (const Keyframe& k : it.value()) a.append(QJsonArray{k.t, k.v, k.mode, k.c1x, k.c1y, k.c2x, k.c2y});
         o[it.key()] = a;
     }
     return o;
@@ -238,6 +261,7 @@ static QMap<QString, KeyList> keysFromJson(const QJsonObject& o) {
         for (const QJsonValue& v : it.value().toArray()) {
             QJsonArray a = v.toArray();
             Keyframe k; k.t = a.at(0).toDouble(); k.v = a.at(1).toDouble(); k.mode = a.at(2).toInt();
+            if (a.size() >= 7) { k.c1x = a.at(3).toDouble(); k.c1y = a.at(4).toDouble(); k.c2x = a.at(5).toDouble(); k.c2y = a.at(6).toDouble(); }
             l.append(k);
         }
         m[it.key()] = l;
@@ -267,6 +291,7 @@ EffectInst effectFromJson(const QJsonObject& o) {
 
 static QJsonObject projectToObj(const Project& p) {
     QJsonObject root;
+    root["notes"] = p.notes; root["bgColor"] = p.bgColor;
     root["fps"] = p.fps; root["W"] = p.W; root["H"] = p.H; root["nextId"] = p.nextId; root["master"] = p.master;
     QJsonArray tr; for (const QString& t : p.tracks) tr.append(t);
     root["tracks"] = tr;
@@ -300,6 +325,12 @@ static QJsonObject projectToObj(const Project& p) {
         o["id"] = c->id; o["assetId"] = c->assetId; o["link"] = c->link; o["track"] = c->track; o["kind"] = c->kind;
         o["text"] = c->text; o["textColor"] = c->textColor; o["textSize"] = c->textSize; o["start"] = c->start; o["in"] = c->in; o["dur"] = c->dur;
         o["fadeIn"] = c->fadeIn; o["fadeOut"] = c->fadeOut;
+        o["textFont"] = c->textFont; o["textBold"] = c->textBold; o["textItalic"] = c->textItalic; o["textShadow"] = c->textShadow;
+        o["textOutline"] = c->textOutline; o["textOutlineColor"] = c->textOutlineColor; o["textAlign"] = c->textAlign;
+        o["animInAngle"] = c->animInAngle; o["animOutAngle"] = c->animOutAngle; o["animLoopAngle"] = c->animLoopAngle;
+        o["animInAmt"] = c->animInAmt; o["animOutAmt"] = c->animOutAmt; o["animLoopAmt"] = c->animLoopAmt;
+        o["animInC"] = QJsonArray{c->animInC[0], c->animInC[1], c->animInC[2], c->animInC[3]};
+        o["animOutC"] = QJsonArray{c->animOutC[0], c->animOutC[1], c->animOutC[2], c->animOutC[3]};
         o["animIn"] = c->animIn; o["animOut"] = c->animOut; o["animLoop"] = c->animLoop;
         o["animInDur"] = c->animInDur; o["animOutDur"] = c->animOutDur;
         o["props"] = numMapToJson(c->props); o["keys"] = keysToJson(c->keys);
@@ -314,6 +345,7 @@ static QJsonObject projectToObj(const Project& p) {
 static bool projectFromObj(Project& p, const QJsonObject& root) {
     if (root.isEmpty()) return false;
     p.assets.clear(); p.clips.clear(); p.markers.clear(); p.trackGain.clear(); p.mute.clear(); p.solo.clear();
+    p.notes = root["notes"].toString(); p.bgColor = root["bgColor"].toString("#000000");
     p.fps = root["fps"].toInt(30); p.W = root["W"].toInt(1280); p.H = root["H"].toInt(720);
     p.nextId = root["nextId"].toInt(1); p.master = root["master"].toDouble(1.0);
     p.tracks.clear();
@@ -347,6 +379,13 @@ static bool projectFromObj(Project& p, const QJsonObject& root) {
         c->textColor = o["textColor"].toString("#ffffff"); c->textSize = o["textSize"].toDouble(1.0);
         c->start = o["start"].toDouble(); c->in = o["in"].toDouble(); c->dur = o["dur"].toDouble();
         c->fadeIn = o["fadeIn"].toDouble(); c->fadeOut = o["fadeOut"].toDouble();
+        c->textFont = o["textFont"].toString(); c->textBold = o["textBold"].toBool(true); c->textItalic = o["textItalic"].toBool(false);
+        c->textShadow = o["textShadow"].toBool(false); c->textOutline = o["textOutline"].toDouble(2.0);
+        c->textOutlineColor = o["textOutlineColor"].toString("#000000"); c->textAlign = o["textAlign"].toInt(1);
+        c->animInAngle = o["animInAngle"].toDouble(); c->animOutAngle = o["animOutAngle"].toDouble(); c->animLoopAngle = o["animLoopAngle"].toDouble();
+        c->animInAmt = o["animInAmt"].toDouble(1); c->animOutAmt = o["animOutAmt"].toDouble(1); c->animLoopAmt = o["animLoopAmt"].toDouble(1);
+        { QJsonArray ia = o["animInC"].toArray(), oa = o["animOutC"].toArray();
+          for (int i = 0; i < 4; ++i) { if (ia.size() == 4) c->animInC[i] = ia.at(i).toDouble(); if (oa.size() == 4) c->animOutC[i] = oa.at(i).toDouble(); } }
         c->animIn = o["animIn"].toString(); c->animOut = o["animOut"].toString(); c->animLoop = o["animLoop"].toString();
         c->animInDur = o["animInDur"].toDouble(0.8); c->animOutDur = o["animOutDur"].toDouble(0.8);
         c->props = numMapFromJson(o["props"].toObject()); c->keys = keysFromJson(o["keys"].toObject());

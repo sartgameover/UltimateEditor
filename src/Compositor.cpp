@@ -1,6 +1,7 @@
 #include "Compositor.h"
 #include "Effects.h"
 #include "Peaks.h"
+#include "Fonts.h"
 #include <QImage>
 #include <QPainter>
 #include <QMatrix4x4>
@@ -114,30 +115,11 @@ void Compositor::upload(Layer& L, const uint8_t* data, int w, int h, bool isNew)
     L.sample.swap(s);
 }
 
-static QImage renderText(const QString& text, const QString& color, double size, int W, int H) {
-    QImage img(W, H, QImage::Format_ARGB32);
-    img.fill(Qt::transparent);
-    QPainter p(&img);
-    p.setRenderHint(QPainter::Antialiasing);
-    p.setRenderHint(QPainter::TextAntialiasing);
-    QFont f("Sans Serif"); f.setPixelSize(qMax((int)(H / 12 * size), 8)); f.setBold(true); p.setFont(f);
-    QRectF r(W * 0.05, H * 0.6, W * 0.9, H * 0.35);
-    int fl = Qt::AlignCenter | Qt::TextWordWrap;
-    p.setPen(Qt::black);
-    for (int i = 0; i < 4; ++i) {
-        static const int dx[4] = {-2, 2, 0, 0}, dy[4] = {0, 0, -2, 2};
-        p.drawText(r.translated(dx[i], dy[i]), fl, text);
-    }
-    p.setPen(QColor(color));
-    p.drawText(r, fl, text);
-    p.end();
-    return img.convertToFormat(QImage::Format_RGBA8888);
-}
-
 bool Compositor::sourceFor(const ClipPtr& c, double local, GLuint& tex, GLuint& prev, int& w, int& h, double& motion) {
     motion = 0;
     if (c->kind == "text") {
-        QString key = QString("t|%1|%2|%3|%4x%5").arg(c->text, c->textColor).arg(c->textSize).arg(project->W).arg(project->H);
+        QString key = QString("t|%1|%2|%3|%4|%5|%6|%7|%8|%9|%10").arg(c->text, c->textColor, c->textOutlineColor, c->textFont)
+                          .arg(c->textSize).arg(c->textOutline).arg(c->textBold ? 1 : 0).arg(c->textItalic ? 1 : 0).arg(c->textShadow ? 1 : 0).arg(c->textAlign);
         if (!statics.count(key)) {                                 // чистим старые версии текста
             int n = 0;
             for (auto& kv : statics) if (kv.first.startsWith("t|")) ++n;
@@ -149,7 +131,11 @@ bool Compositor::sourceFor(const ClipPtr& c, double local, GLuint& tex, GLuint& 
         }
         Layer& L = statics[key];
         if (!L.tex[0]) {
-            QImage img = renderText(c->text.isEmpty() ? QString("Text") : c->text, c->textColor, c->textSize, project->W, project->H);
+            TextStyle ts;
+            ts.text = c->text; ts.font = c->textFont; ts.color = c->textColor; ts.outlineColor = c->textOutlineColor;
+            ts.size = c->textSize; ts.outline = c->textOutline; ts.bold = c->textBold; ts.italic = c->textItalic;
+            ts.shadow = c->textShadow; ts.align = c->textAlign;
+            QImage img = renderTextImage(ts, project->W, project->H);
             upload(L, img.constBits(), img.width(), img.height(), true);
         }
         tex = prev = L.tex[0]; w = L.w; h = L.h;
@@ -209,6 +195,7 @@ GLuint Compositor::runEffects(const std::vector<EffectInst>& fxs, double local, 
         if (loc("uTime") >= 0) glUniform1f(loc("uTime"), (float)t);
         if (loc("uAudio") >= 0) glUniform1f(loc("uAudio"), audio);
         if (loc("uMotion") >= 0) glUniform1f(loc("uMotion"), motion);
+        if (loc("uRot") >= 0) glUniform1f(loc("uRot"), (float)(e.value("_rot", local, 0.0) * 0.017453292519943295));   // поворот эффекта 0..360°
         for (int i = 0; i < d->params.size(); ++i) {
             QByteArray nm = "p" + QByteArray::number(i);
             int l = loc(nm.constData());
@@ -233,7 +220,7 @@ void Compositor::drawLayer(const ClipPtr& c, double t, double fade) {
     if (!sourceFor(c, srcLocal, tex, prev, sw, sh, motion)) return;
     sizes[c->id] = QSize(sw, sh);
     const int W = project->W, H = project->H;
-    double s0 = std::min(W / (double)sw, H / (double)sh);
+    double s0 = fitScale(*c, sw, sh, W, H);
     int fw = qMax(1, (int)(sw * s0 + 0.5)), fh = qMax(1, (int)(sh * s0 + 0.5));
     if (!c->effects.empty()) {
         float audio = 0.f;
@@ -255,7 +242,7 @@ void Compositor::drawLayer(const ClipPtr& c, double t, double fade) {
     m.ortho(0, W, H, 0, -1, 1);
     m.translate((float)cx, (float)cy);
     m.rotate((float)rot, 0, 0, 1);
-    m.scale((float)(fw * scale / 2.0), (float)(fh * scale / 2.0), 1.f);
+    m.scale((float)(fw * scale * am.sx / 2.0), (float)(fh * scale * am.sy / 2.0), 1.f);
     comp->bind();
     comp->setUniformValue("uMVP", m);
     comp->setUniformValue("uOpacity", (float)opacity);
@@ -274,7 +261,7 @@ GLuint Compositor::render(double t, const QString& previewFx, bool useProxy_) {
     glDisable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE); glDisable(GL_SCISSOR_TEST);
     canvas->bind();
     glViewport(0, 0, project->W, project->H);
-    glClearColor(0, 0, 0, 1);
+    { QColor bg(project->bgColor); glClearColor((float)bg.redF(), (float)bg.greenF(), (float)bg.blueF(), 1.f); }
     glClear(GL_COLOR_BUFFER_BIT);
     glEnable(GL_BLEND);
     glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);

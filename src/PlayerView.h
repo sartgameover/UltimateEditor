@@ -3,6 +3,7 @@
 #include "Compositor.h"
 #include "AudioEngine.h"
 #include <QOpenGLWidget>
+#include <QImage>
 #include <QTimer>
 #include <QElapsedTimer>
 
@@ -21,6 +22,9 @@ public:
     void setUpdatesPaused(bool b) { paused = b; }
     void setFreeRun(bool b) { freeRun = b; }                 // играть дальше конца проекта (запись голоса)
     bool countingDown() const { return countdown > 0; }
+    void setScopesEnabled(bool on) { scopes = on; update(); }
+    double previewFps() const { return curFps; }
+    QString glInfo() const { return glRenderer; }
 
 public slots:
     void play();
@@ -41,6 +45,8 @@ signals:
     void countdownFinished();
     void aboutToEdit();
     void effectDropped(ClipPtr c, QString spec);
+    void textDoubleClicked(ClipPtr c);
+    void scopesFrame(QImage frame);
 
 protected:
     void initializeGL() override;
@@ -49,6 +55,7 @@ protected:
     void mouseMoveEvent(QMouseEvent* e) override;
     void mouseReleaseEvent(QMouseEvent* e) override;
     void wheelEvent(QWheelEvent* e) override;
+    void mouseDoubleClickEvent(QMouseEvent* e) override;
     void dragEnterEvent(QDragEnterEvent* e) override;
     void dragMoveEvent(QDragMoveEvent* e) override;
     void dropEvent(QDropEvent* e) override;
@@ -67,6 +74,12 @@ private:
     bool playing = false, rec = false, paused = false, glReady = false, freeRun = false;
     int countdown = 0;
     QTimer cdTimer;
+    bool scopes = false;
+    int scopeCtr = 0, frames = 0;
+    double curFps = 0;
+    QElapsedTimer fpsClock;
+    QString glRenderer;
+    void grabScopes();
     QString previewFx;
     ClipPtr sel;
     QRectF disp;                       // область кадра в координатах виджета

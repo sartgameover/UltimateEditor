@@ -1,3 +1,4 @@
+#include <QPolygonF>
 #include "Branding.h"
 #include <QCoreApplication>
 #include <QDir>

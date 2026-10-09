@@ -17,6 +17,7 @@ public:
     const QList<ClipPtr>& selection() const { return selected; }
     void selectClip(const ClipPtr& c);
     void refreshTracks();
+    void applySettings();                         // высота дорожек, привязка, волны, тема
     // запись голоса
     void armTrack(const QString& t) { armed = t; update(); }
     QString armedTrack() const { return armed; }

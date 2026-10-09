@@ -1,7 +1,11 @@
+#include <QDragMoveEvent>
 #include "PlayerView.h"
 #include <QMouseEvent>
 #include <QWheelEvent>
 #include <QPainter>
+#include <QOpenGLContext>
+#include <QOpenGLFunctions>
+#include "AppSettings.h"
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QMimeData>
@@ -52,6 +56,30 @@ void PlayerView::setProject(Project* p) {
 void PlayerView::initializeGL() {
     comp.init();
     glReady = true;
+    const GLubyte* r = QOpenGLContext::currentContext()->functions()->glGetString(GL_RENDERER);
+    if (r) glRenderer = QString::fromUtf8(reinterpret_cast<const char*>(r));
+    fpsClock.start();
+}
+
+void PlayerView::grabScopes() {
+    std::vector<uint8_t> buf;
+    if (!comp.readPixels(buf)) return;
+    const int W = project->W, H = project->H, sw = 192, sh = 108;
+    QImage img(sw, sh, QImage::Format_RGB888);
+    for (int y = 0; y < sh; ++y) {
+        const int sy = H - 1 - (y * H / sh);
+        for (int x = 0; x < sw; ++x) {
+            const uint8_t* px = &buf[((size_t)sy * W + (size_t)(x * W / sw)) * 4];
+            uchar* d = img.scanLine(y) + x * 3;
+            d[0] = px[0]; d[1] = px[1]; d[2] = px[2];
+        }
+    }
+    emit scopesFrame(img);
+}
+
+void PlayerView::mouseDoubleClickEvent(QMouseEvent* e) {
+    ClipPtr c = pick(e->position());
+    if (c && c->kind == "text") emit textDoubleClicked(c);
 }
 
 void PlayerView::paintGL() {
@@ -61,6 +89,8 @@ void PlayerView::paintGL() {
     GLuint tex = comp.render(t, previewFx, true);
     QRect r = comp.presentLetterboxed(tex, pw, ph);
     disp = QRectF(r.x() / dpr, (ph - r.y() - r.height()) / dpr, r.width() / dpr, r.height() / dpr);
+    if (scopes && (++scopeCtr % 4 == 0)) grabScopes();
+    if (++frames >= 30 && fpsClock.isValid()) { curFps = frames * 1000.0 / qMax<qint64>(fpsClock.restart(), 1); frames = 0; }
 
     // оверлей: рамка выбранного объекта
     QPainter p(this);
@@ -69,7 +99,7 @@ void PlayerView::paintGL() {
         int cw = 0, ch = 0;
         if (comp.contentSize(sel->id, cw, ch)) {
             double local = t - sel->start;
-            double s0 = std::min(project->W / (double)cw, project->H / (double)ch);
+            double s0 = Compositor::fitScale(*sel, cw, ch, project->W, project->H);
             double k = disp.width() / project->W;
             AnimMod am = animationMod(*sel, local);
             double sc = sel->prop("scale", local) * am.scale;
@@ -83,6 +113,18 @@ void PlayerView::paintGL() {
             p.drawRect(QRectF(-bw / 2, -bh / 2, bw, bh));
             p.restore();
         }
+    }
+    if (AppSettings::showGrid()) {                              // сетка «правило третей»
+        p.setPen(QPen(QColor(255, 255, 255, 90), 1));
+        for (int i = 1; i < 3; ++i) {
+            p.drawLine(QPointF(disp.left() + disp.width() * i / 3, disp.top()), QPointF(disp.left() + disp.width() * i / 3, disp.bottom()));
+            p.drawLine(QPointF(disp.left(), disp.top() + disp.height() * i / 3), QPointF(disp.right(), disp.top() + disp.height() * i / 3));
+        }
+    }
+    if (AppSettings::showSafeZones()) {                         // безопасные зоны 90% и 80%
+        p.setPen(QPen(QColor(255, 213, 74, 140), 1, Qt::DashLine));
+        p.setBrush(Qt::NoBrush);
+        for (double k : {0.9, 0.8}) p.drawRect(QRectF(disp.center().x() - disp.width() * k / 2, disp.center().y() - disp.height() * k / 2, disp.width() * k, disp.height() * k));
     }
     p.setPen(QColor("#ff4d4f"));
     if (rec) p.drawText(14, 22, "● REC motion");
@@ -118,7 +160,10 @@ void PlayerView::toggle() { if (playing) pause(); else play(); }
 void PlayerView::tick() {
     if (!playing) return;
     t = t0 + clock.nsecsElapsed() / 1e9;           // по настенным часам: пропуск кадров вместо замедления
-    if (!freeRun && t >= project->duration()) { t = project->duration(); pause(); }
+    if (!freeRun && t >= project->duration()) {
+        if (AppSettings::loopPlayback() && project->duration() > 0.1) { t = 0; t0 = 0; clock.restart(); }       // повтор
+        else { t = project->duration(); pause(); }
+    }
     audio.sync(t, playing);
     emit timeChanged(t);
     if (!paused) update();
@@ -146,7 +191,7 @@ ClipPtr PlayerView::pick(const QPointF& pos) {
             int cw = 0, ch = 0;
             bool hit = true;
             if (comp.contentSize(c->id, cw, ch)) {
-                double local = t - c->start, s0 = std::min(project->W / (double)cw, project->H / (double)ch);
+                double local = t - c->start, s0 = Compositor::fitScale(*c, cw, ch, project->W, project->H);
                 double bw = cw * s0 * c->prop("scale", local) * disp.width() / project->W;
                 double bh = ch * s0 * c->prop("scale", local) * disp.width() / project->W;
                 QPointF ctr(disp.center().x() + c->prop("x", local) * disp.width(), disp.center().y() + c->prop("y", local) * disp.height());

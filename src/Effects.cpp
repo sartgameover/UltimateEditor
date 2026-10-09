@@ -1,3 +1,4 @@
+#include <QJsonObject>
 #include "Effects.h"
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -26,8 +27,18 @@ uniform vec2 uRes;
 uniform float uTime;
 uniform float uAudio;
 uniform float uMotion;
+uniform float uRot;
 uniform float p0; uniform float p1; uniform float p2; uniform float p3; uniform float p4;
 uniform float p5; uniform float p6; uniform float p7; uniform float p8;
+vec2 uvRot(vec2 q, float a) {
+    vec2 asp = vec2(uRes.x / uRes.y, 1.0);
+    vec2 d = (q - vec2(0.5)) * asp;
+    float s = sin(a); float c = cos(a);
+    d = vec2(c * d.x - s * d.y, s * d.x + c * d.y);
+    return d / asp + vec2(0.5);
+}
+vec4 texR(sampler2D t, vec2 q) { return texture(t, uvRot(q, -uRot)); }
+#define texture(t, q) texR(t, q)
 float hash(float n) { return fract(sin(n * 127.1) * 43758.5453); }
 float hash2(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
@@ -51,7 +62,7 @@ vec3 hsv2rgb(vec3 c) {
     vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
     return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
 }
-)GLSL") + d.body + QString("\nvoid main() { oColor = fx(vUV); }\n");
+)GLSL") + d.body + QString("\nvoid main() { oColor = fx(uvRot(vUV, uRot)); }\n");
 }
 
 static QList<EffectDef> build() {
@@ -356,57 +367,150 @@ void savePreset(const QString& name, const std::vector<EffectInst>& fx) {
     if (f.open(QIODevice::WriteOnly)) f.write(QJsonDocument(all).toJson());
 }
 
-// ---------- анимации ----------
+void deletePreset(const QString& name) {
+    QJsonObject all = readPresets();
+    all.remove(name);
+    QFile f(presetFile());
+    if (f.open(QIODevice::WriteOnly)) f.write(QJsonDocument(all).toJson());
+}
+
+// ---------- анимации (как пресеты After Effects): вход / выход / постоянные ----------
 static double easeStep(double u) { u = qBound(0.0, u, 1.0); return u * u * (3 - 2 * u); }
+static double hsh(double x) { double s = std::sin(x * 127.1) * 43758.5453; return s - std::floor(s); }
+static double backOut(double u) { u = qBound(0.0, u, 1.0); double v = u - 1; return 1 + 2.70158 * v * v * v + 1.70158 * v * v; }
+static double elasticOut(double u) {
+    if (u <= 0) return 0;
+    if (u >= 1) return 1;
+    return std::pow(2.0, -10 * u) * std::sin((u * 10 - 0.75) * 2.0943951) + 1;
+}
+static double bounceOut(double u) {
+    u = qBound(0.0, u, 1.0);
+    if (u < 1 / 2.75) return 7.5625 * u * u;
+    if (u < 2 / 2.75) { u -= 1.5 / 2.75; return 7.5625 * u * u + 0.75; }
+    if (u < 2.5 / 2.75) { u -= 2.25 / 2.75; return 7.5625 * u * u + 0.9375; }
+    u -= 2.625 / 2.75; return 7.5625 * u * u + 0.984375;
+}
 
 QStringList animationInNames() {
-    return {"Fade In", "Slide In Left", "Slide In Right", "Slide In Up", "Slide In Down", "Zoom In", "Pop", "Spin In"};
+    return {"Fade In", "Slide In", "Slide Fade In", "Zoom In", "Zoom From Big", "Pop", "Spin In", "Bounce In", "Elastic In",
+            "Flip In", "Swing In", "Whip In", "Stretch In", "Roll In", "Twirl In", "Rubber Band In", "Drop In", "Rise In"};
 }
 QStringList animationOutNames() {
-    return {"Fade Out", "Slide Out Left", "Slide Out Right", "Slide Out Up", "Slide Out Down", "Zoom Out", "Spin Out"};
+    return {"Fade Out", "Slide Out", "Slide Fade Out", "Zoom Out", "Zoom To Big", "Pop Out", "Spin Out", "Bounce Out",
+            "Flip Out", "Fall Out", "Whip Out", "Roll Out", "Rise Out", "Twirl Out"};
 }
-QStringList animationLoopNames() { return {"Ken Burns In", "Ken Burns Out", "Shake", "Pulse"}; }
+QStringList animationLoopNames() {
+    return {"Ken Burns In", "Ken Burns Out", "Shake", "Pulse", "Heartbeat", "Wiggle", "Float", "Sway", "Spin Loop", "Bounce Loop",
+            "Breathing", "Jitter", "Drift", "Flicker", "Blink", "Orbit", "Rubber Loop"};
+}
+
+QString animationSlot(const QString& n) {
+    if (animationInNames().contains(n)) return "in";
+    if (animationOutNames().contains(n)) return "out";
+    if (animationLoopNames().contains(n)) return "loop";
+    return QString();
+}
+
+// стартовые значения «угол / сила» для каждой анимации (потом их можно крутить на 0–360°)
+static void animDefaults(const QString& n, double& ang, double& amt) {
+    ang = 0; amt = 1;
+    if (n == "Slide In" || n == "Slide Fade In" || n == "Whip In") ang = 180;            // приходит слева
+    else if (n == "Slide Out" || n == "Slide Fade Out" || n == "Whip Out") ang = 0;      // уходит вправо
+    else if (n == "Bounce In" || n == "Drop In") ang = 90;                               // падает сверху
+    else if (n == "Rise In") ang = 270;
+    else if (n == "Rise Out") ang = 90;
+    else if (n == "Spin In" || n == "Spin Out" || n == "Twirl In" || n == "Twirl Out" || n == "Roll In" || n == "Roll Out") ang = 360;
+    else if (n == "Spin Loop") ang = 90;                                                  // градусов в секунду
+    else if (n == "Shake" || n == "Jitter") ang = 0;
+    else if (n == "Drift") ang = 0;
+    else if (n == "Pop" || n == "Pop Out") amt = 1;
+}
 
 void setAnimation(Clip& c, const QString& n) {
-    if (animationInNames().contains(n)) c.animIn = n;
-    else if (animationOutNames().contains(n)) c.animOut = n;
-    else if (animationLoopNames().contains(n)) c.animLoop = n;
+    QString slot = animationSlot(n);
+    double ang, amt;
+    animDefaults(n, ang, amt);
+    if (slot == "in") { c.animIn = n; c.animInAngle = ang; c.animInAmt = amt; }
+    else if (slot == "out") { c.animOut = n; c.animOutAngle = ang; c.animOutAmt = amt; }
+    else if (slot == "loop") { c.animLoop = n; c.animLoopAngle = ang; c.animLoopAmt = amt; }
 }
 
 AnimMod animationMod(const Clip& c, double local) {
     AnimMod m;
+    const double PI2 = 6.283185307179586;
+    // ---------- ВХОД ----------
     if (!c.animIn.isEmpty() && c.animInDur > 1e-6 && local < c.animInDur) {
-        double u = local / c.animInDur, p = easeStep(u);
+        const double u = qBound(0.0, local / c.animInDur, 1.0);
+        const double p = cubicBezierY(u, c.animInC[0], c.animInC[1], c.animInC[2], c.animInC[3]);
+        const double A = c.animInAmt, ang = c.animInAngle * 3.14159265358979 / 180.0;
+        const double fx = std::cos(ang), fy = -std::sin(ang);                // откуда приходит клип
         const QString& n = c.animIn;
         if (n == "Fade In") m.opacity *= p;
-        else if (n == "Slide In Left") m.dx -= (1 - p);
-        else if (n == "Slide In Right") m.dx += (1 - p);
-        else if (n == "Slide In Up") m.dy += (1 - p);
-        else if (n == "Slide In Down") m.dy -= (1 - p);
-        else if (n == "Zoom In") m.scale *= p;
-        else if (n == "Pop") m.scale *= (u < 0.6) ? (u / 0.6) * 1.15 : 1.15 - 0.15 * ((u - 0.6) / 0.4);
-        else if (n == "Spin In") { m.rot -= 360.0 * (1 - p); m.scale *= p; }
+        else if (n == "Slide In") { m.dx += fx * (1 - p) * A; m.dy += fy * (1 - p) * A; }
+        else if (n == "Slide Fade In") { m.dx += fx * (1 - p) * A; m.dy += fy * (1 - p) * A; m.opacity *= p; }
+        else if (n == "Zoom In") m.scale *= qMax(1 - A, 0.0) + (1 - qMax(1 - A, 0.0)) * p;
+        else if (n == "Zoom From Big") { m.scale *= 1 + A * 2 * (1 - p); m.opacity *= p; }
+        else if (n == "Pop") m.scale *= (u < 0.6) ? (u / 0.6) * (1 + 0.15 * A) : (1 + 0.15 * A) - 0.15 * A * ((u - 0.6) / 0.4);
+        else if (n == "Spin In") { m.rot -= c.animInAngle * A * (1 - p); m.scale *= p; }
+        else if (n == "Bounce In") { double b = bounceOut(u); m.dx += fx * (1 - b) * A; m.dy += fy * (1 - b) * A; }
+        else if (n == "Elastic In") m.scale *= elasticOut(u);
+        else if (n == "Flip In") { m.sx *= 1 - std::fabs(std::cos(ang)) * (1 - p); m.sy *= 1 - std::fabs(std::sin(ang)) * (1 - p); }
+        else if (n == "Swing In") { m.rot += 45 * A * (1 - u) * std::sin(u * 18); m.opacity *= qMin(p * 2, 1.0); }
+        else if (n == "Whip In") { double b = backOut(u); m.dx += fx * (1 - b) * A * 1.5; m.dy += fy * (1 - b) * A * 1.5; }
+        else if (n == "Stretch In") { m.sx *= p; m.sy *= 1 + (1 - p) * A; }
+        else if (n == "Roll In") { m.dx += fx * (1 - p) * A; m.dy += fy * (1 - p) * A; m.rot -= c.animInAngle * (1 - p); }
+        else if (n == "Twirl In") { m.rot -= 720 * A * (1 - p); m.scale *= p; m.opacity *= p; }
+        else if (n == "Rubber Band In") { m.sx *= elasticOut(u); m.sy *= elasticOut(std::min(u * 1.1, 1.0)); }
+        else if (n == "Drop In") { double b = backOut(u); m.dx += fx * (1 - b) * A * 1.2; m.dy += fy * (1 - b) * A * 1.2; }
+        else if (n == "Rise In") { m.dx += fx * (1 - p) * A * 0.4; m.dy += fy * (1 - p) * A * 0.4; m.opacity *= p; }
     }
+    // ---------- ВЫХОД ----------
     if (!c.animOut.isEmpty() && c.animOutDur > 1e-6) {
-        double st = c.dur - c.animOutDur;
+        const double st = c.dur - c.animOutDur;
         if (local > st) {
-            double q = easeStep((local - st) / c.animOutDur);
+            const double u = qBound(0.0, (local - st) / c.animOutDur, 1.0);
+            const double q = cubicBezierY(u, c.animOutC[0], c.animOutC[1], c.animOutC[2], c.animOutC[3]);
+            const double A = c.animOutAmt, ang = c.animOutAngle * 3.14159265358979 / 180.0;
+            const double fx = std::cos(ang), fy = -std::sin(ang);            // куда уходит клип
             const QString& n = c.animOut;
-            if (n == "Fade Out") m.opacity *= (1 - q);
-            else if (n == "Slide Out Left") m.dx -= q;
-            else if (n == "Slide Out Right") m.dx += q;
-            else if (n == "Slide Out Up") m.dy -= q;
-            else if (n == "Slide Out Down") m.dy += q;
-            else if (n == "Zoom Out") m.scale *= (1 - q);
-            else if (n == "Spin Out") { m.rot += 360.0 * q; m.scale *= (1 - q); }
+            if (n == "Fade Out") m.opacity *= 1 - q;
+            else if (n == "Slide Out") { m.dx += fx * q * A; m.dy += fy * q * A; }
+            else if (n == "Slide Fade Out") { m.dx += fx * q * A; m.dy += fy * q * A; m.opacity *= 1 - q; }
+            else if (n == "Zoom Out") m.scale *= qMax(1 - q * A, 0.0);
+            else if (n == "Zoom To Big") { m.scale *= 1 + q * A * 2; m.opacity *= 1 - q; }
+            else if (n == "Pop Out") m.scale *= (u < 0.3) ? 1 + 0.2 * A * (u / 0.3) : (1 + 0.2 * A) * (1 - (u - 0.3) / 0.7);
+            else if (n == "Spin Out") { m.rot += c.animOutAngle * A * q; m.scale *= qMax(1 - q, 0.0); }
+            else if (n == "Bounce Out") { m.dx += fx * q * q * A * 1.5; m.dy += fy * q * q * A * 1.5; }
+            else if (n == "Flip Out") { m.sx *= 1 - std::fabs(std::cos(ang)) * q; m.sy *= 1 - std::fabs(std::sin(ang)) * q; }
+            else if (n == "Fall Out") { m.rot += 90 * A * q; m.dy += q * q * 1.2; m.opacity *= 1 - q * q; }
+            else if (n == "Whip Out") { m.dx += fx * q * q * q * A * 1.5; m.dy += fy * q * q * q * A * 1.5; }
+            else if (n == "Roll Out") { m.dx += fx * q * A; m.dy += fy * q * A; m.rot += c.animOutAngle * q; }
+            else if (n == "Rise Out") { m.dx += fx * q * A * 0.4; m.dy += fy * q * A * 0.4; m.opacity *= 1 - q; }
+            else if (n == "Twirl Out") { m.rot += 720 * A * q; m.scale *= qMax(1 - q, 0.0); m.opacity *= 1 - q; }
         }
     }
+    // ---------- ПОСТОЯННЫЕ (угол — направление или градусы/сек) ----------
     if (!c.animLoop.isEmpty()) {
         const QString& n = c.animLoop;
-        if (n == "Ken Burns In") m.scale *= 1.0 + 0.25 * (local / qMax(c.dur, 0.01));
-        else if (n == "Ken Burns Out") m.scale *= 1.25 - 0.25 * (local / qMax(c.dur, 0.01));
-        else if (n == "Shake") { m.dx += 0.010 * std::sin(local * 55.0); m.dy += 0.008 * std::sin(local * 47.0 + 1.0); }
-        else if (n == "Pulse") m.scale *= 1.0 + 0.05 * std::sin(local * 6.2832 * 2.0);
+        const double A = c.animLoopAmt, ang = c.animLoopAngle * 3.14159265358979 / 180.0;
+        const double fx = std::cos(ang), fy = -std::sin(ang), k = local / qMax(c.dur, 0.01);
+        if (n == "Ken Burns In") { m.scale *= 1.0 + 0.25 * A * k; m.dx += fx * 0.04 * A * k; m.dy += fy * 0.04 * A * k; }
+        else if (n == "Ken Burns Out") { m.scale *= 1.0 + 0.25 * A * (1 - k); m.dx += fx * 0.04 * A * (1 - k); m.dy += fy * 0.04 * A * (1 - k); }
+        else if (n == "Shake") { double s = std::sin(local * 55.0); m.dx += fx * 0.012 * A * s; m.dy += fy * 0.012 * A * s + 0.004 * A * std::sin(local * 47.0 + 1.0); }
+        else if (n == "Pulse") m.scale *= 1.0 + 0.05 * A * std::sin(local * PI2 * 2.0);
+        else if (n == "Heartbeat") { double ph = std::fmod(local * 1.2, 1.0); double b = (ph < 0.12) ? std::sin(ph / 0.12 * 3.14159) : (ph > 0.25 && ph < 0.37) ? 0.7 * std::sin((ph - 0.25) / 0.12 * 3.14159) : 0.0; m.scale *= 1.0 + 0.08 * A * b; }
+        else if (n == "Wiggle") { m.dx += (std::sin(local * 3.1) + std::sin(local * 5.7 + 2.0)) * 0.012 * A; m.dy += (std::sin(local * 2.3 + 1.0) + std::sin(local * 6.1)) * 0.012 * A; m.rot += std::sin(local * 4.2) * 2.0 * A; }
+        else if (n == "Float") { m.dx += fx * 0.02 * A * std::sin(local * PI2 * 0.5); m.dy += (ang == 0 ? -1.0 : fy) * 0.02 * A * std::sin(local * PI2 * 0.5); }
+        else if (n == "Sway") m.rot += 6.0 * A * std::sin(local * PI2 * 0.6);
+        else if (n == "Spin Loop") m.rot += c.animLoopAngle * A * local;
+        else if (n == "Bounce Loop") { m.dy -= std::fabs(std::sin(local * PI2 * 0.6)) * 0.08 * A; }
+        else if (n == "Breathing") m.scale *= 1.0 + 0.03 * A * std::sin(local * PI2 * 0.3);
+        else if (n == "Jitter") { double f = std::floor(local * 12.0); m.dx += (hsh(f) - 0.5) * 0.02 * A; m.dy += (hsh(f + 7.0) - 0.5) * 0.02 * A; }
+        else if (n == "Drift") { m.dx += fx * 0.03 * A * local; m.dy += fy * 0.03 * A * local; }
+        else if (n == "Flicker") m.opacity *= 0.65 + 0.35 * hsh(std::floor(local * 24.0));
+        else if (n == "Blink") m.opacity *= (std::fmod(local * std::max(A, 0.1), 1.0) < 0.6) ? 1.0 : 0.15;
+        else if (n == "Orbit") { m.dx += std::cos(local * PI2 * 0.5) * 0.05 * A; m.dy += std::sin(local * PI2 * 0.5) * 0.05 * A; }
+        else if (n == "Rubber Loop") { double s = std::sin(local * PI2 * 1.5); m.sx *= 1.0 + 0.07 * A * s; m.sy *= 1.0 - 0.07 * A * s; }
     }
     return m;
 }

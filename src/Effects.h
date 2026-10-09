@@ -22,11 +22,13 @@ bool isAudioEffect(const QString& name);
 QStringList presetNames();
 std::vector<EffectInst> loadPreset(const QString& name);
 void savePreset(const QString& name, const std::vector<EffectInst>& fx);
+void deletePreset(const QString& name);
 
 // анимации: вход / выход / постоянные; длительность входа и выхода тянется «шариками» на клипе
-struct AnimMod { double dx = 0, dy = 0, scale = 1, rot = 0, opacity = 1; };
+struct AnimMod { double dx = 0, dy = 0, scale = 1, rot = 0, opacity = 1, sx = 1, sy = 1; };
 QStringList animationInNames();
 QStringList animationOutNames();
 QStringList animationLoopNames();
-void setAnimation(Clip& c, const QString& name);              // сама определяет слот (вход/выход/цикл)
+void setAnimation(Clip& c, const QString& name);              // сама определяет слот (вход/выход/цикл) и ставит стартовые угол/силу
+QString animationSlot(const QString& name);                    // "in" | "out" | "loop" | ""
 AnimMod animationMod(const Clip& c, double local);

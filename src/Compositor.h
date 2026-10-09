@@ -9,12 +9,15 @@
 #include <QRect>
 #include <map>
 #include <memory>
+#include <algorithm>
 
 // GPU-компоновка кадра: декодер -> текстура -> шейдерные эффекты (ping-pong FBO) -> трансформация -> слои.
 // Один и тот же код — для плеера и для экспорта.
 class Compositor : protected QOpenGLFunctions_3_3_Core {
 public:
-    GLuint defaultFbo = 0;                      // куда вернуть рендер после работы (FBO виджета)
+    GLuint defaultFbo = 0;
+    // масштаб «вписывания» источника в кадр (текст рисуется 1:1, у него тесные границы)
+    static double fitScale(const Clip& c, int cw, int ch, int W, int H) { return c.kind == "text" ? 1.0 : std::min(W / (double)cw, H / (double)ch); }                      // куда вернуть рендер после работы (FBO виджета)
 
     Compositor() {}
     ~Compositor() {}

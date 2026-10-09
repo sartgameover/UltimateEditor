@@ -8,6 +8,8 @@
 class PlayerView; class TimelineWidget; class TransportBar; class Inspector; class MixerPanel;
 class AssetsPanel; class EffectsTree; class AnimationsList; class QTabWidget; class QDockWidget;
 class VoiceRecorder; class ScreenRecorder; class RecordHud;
+class MarkersPanel; class ProjectPropsPanel; class StructurePanel; class NotesPanel; class PresetsPanel; class RecorderPanel;
+class FileBrowserPanel; class TimecodePanel; class HotkeysPanel; class StatsPanel; class LogPanel; class ScopesPanel; class FontsPanel;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -25,6 +27,9 @@ private:
     void newProject(); void openProject(); void saveProject(bool saveAs); void recover();
     void importDialog(); void exportDialog();
     void defaultLayout();
+    void applySettings();
+    void refreshPanels();
+    QDockWidget* addExtra(const QString& title, const QString& obj, QWidget* w);
     void applyToClip(const ClipPtr& c, const QString& spec);     // "fx:Имя" | "afx:Имя" | "anim:Имя" | "preset:Имя"
     ClipPtr selectedOrAtPlayhead();
     void startScreenRecording(); void stopScreenRecording();
@@ -53,6 +58,15 @@ private:
     ScreenRecorder* screenRec = nullptr;
     RecordHud* hud = nullptr;
     QString screenPath;
+    // дополнительные окна (по умолчанию скрыты, включаются в меню «Вид»)
+    QList<QDockWidget*> extraDocks;
+    QList<QAction*> allActions;
+    QTimer panelTimer;
+    QDockWidget* dScopes = nullptr;
+    EffectsTree* fxTree2 = nullptr; EffectsTree* afxTree = nullptr; AnimationsList* anims2 = nullptr;
+    MarkersPanel* markersP = nullptr; ProjectPropsPanel* propsP = nullptr; StructurePanel* structP = nullptr; NotesPanel* notesP = nullptr;
+    PresetsPanel* presetsP = nullptr; RecorderPanel* recP = nullptr; FileBrowserPanel* filesP = nullptr; TimecodePanel* tcP = nullptr;
+    HotkeysPanel* keysP = nullptr; StatsPanel* statsP = nullptr; LogPanel* logP = nullptr; ScopesPanel* scopesP = nullptr; FontsPanel* fontsP = nullptr;
     QTimer autosaveTimer, meterTimer;
     QString cacheDir;
     QList<QByteArray> undoStack, redoStack;

@@ -1,3 +1,4 @@
+#include <QPolygonF>
 #include "ChannelFx.h"
 #include "AudioFx.h"
 #include <QPainter>

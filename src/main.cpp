@@ -2,27 +2,12 @@
 #include "StartScreen.h"
 #include "Installer.h"
 #include "Branding.h"
+#include "Theme.h"
+#include "AppSettings.h"
 #include <QApplication>
 #include <QSurfaceFormat>
 #include <QPalette>
 #include <QFileInfo>
-
-static void darkTheme(QApplication& app) {
-    app.setStyle("Fusion");
-    QPalette p;
-    p.setColor(QPalette::Window, QColor("#2b2d31"));
-    p.setColor(QPalette::WindowText, QColor("#e3e5e8"));
-    p.setColor(QPalette::Base, QColor("#1e1f22"));
-    p.setColor(QPalette::AlternateBase, QColor("#2b2d31"));
-    p.setColor(QPalette::Text, QColor("#e3e5e8"));
-    p.setColor(QPalette::Button, QColor("#383a40"));
-    p.setColor(QPalette::ButtonText, QColor("#e3e5e8"));
-    p.setColor(QPalette::Highlight, QColor("#3b6ea5"));
-    p.setColor(QPalette::HighlightedText, QColor("#ffffff"));
-    p.setColor(QPalette::ToolTipBase, QColor("#1e1f22"));
-    p.setColor(QPalette::ToolTipText, QColor("#e3e5e8"));
-    app.setPalette(p);
-}
 
 int main(int argc, char** argv) {
     QSurfaceFormat fmt;
@@ -34,7 +19,8 @@ int main(int argc, char** argv) {
     QApplication app(argc, argv);
     app.setOrganizationName("UltimateEditor");
     app.setApplicationName("UltimateEditor");
-    darkTheme(app);
+    Theme::instance().load();                                   // тёмная / светлая / своя тема + шрифт интерфейса
+    Theme::instance().apply();
     const QStringList args = app.arguments();
 
     // служебные команды (для сборки AppImage и удаления)
@@ -57,7 +43,7 @@ int main(int argc, char** argv) {
         if (a.endsWith(".uvmvideos")) projectFile = a; else media << a;
     }
     QString chosen = projectFile;
-    if (projectFile.isEmpty() && media.isEmpty()) {
+    if (projectFile.isEmpty() && media.isEmpty() && AppSettings::showStartScreen()) {
         StartScreen ss;                                           // мини-окно с Baner / BanrIcon, недавние и найденные проекты
         if (ss.exec() != QDialog::Accepted) return 0;
         chosen = ss.chosenPath();

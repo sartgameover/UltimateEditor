@@ -1,3 +1,4 @@
+#include <QLinearGradient>
 #include "StartScreen.h"
 #include "Branding.h"
 #include <QPainter>

@@ -1,6 +1,12 @@
+#include <QPolygonF>
+#include <QDragMoveEvent>
+#include <QDragLeaveEvent>
+#include <QAction>
 #include "Timeline.h"
 #include "Peaks.h"
 #include "Effects.h"
+#include "Theme.h"
+#include "AppSettings.h"
 #include <QPainter>
 #include <QMouseEvent>
 #include <QWheelEvent>
@@ -16,7 +22,9 @@
 #include <algorithm>
 #include <cmath>
 
-static const int HEAD_W = 96, RULER_H = 26, TRACK_H = 52;
+static const int HEAD_W = 96, RULER_H = 26;
+static int TRACK_H = 52;
+static QColor tc(const char* k) { return Theme::instance().color(k); }
 
 static QString fmtTime(double t) {
     int m = (int)(t / 60);
@@ -27,11 +35,14 @@ TimelineWidget::TimelineWidget(Project* p, QWidget* parent) : QWidget(parent), p
     setAcceptDrops(true);
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
+    TRACK_H = AppSettings::trackHeight();
     refreshTracks();
+    connect(&Theme::instance(), &Theme::changed, this, [this]() { update(); });
     connect(&Peaks::instance(), &Peaks::ready, this, [this](const QString&) { update(); });
 }
 
 void TimelineWidget::setProject(Project* p) { project = p; selected.clear(); refreshTracks(); update(); }
+void TimelineWidget::applySettings() { TRACK_H = AppSettings::trackHeight(); refreshTracks(); update(); }
 void TimelineWidget::refreshTracks() { setMinimumHeight(RULER_H + TRACK_H * project->tracks.size() + 4); updateGeometry(); update(); }
 
 double TimelineWidget::t2x(double t) const { return HEAD_W + (t - scroll) * pps; }
@@ -59,7 +70,7 @@ double TimelineWidget::snapTime(double t, const QList<double>& offs, const QList
     QList<double> pts; pts << 0.0 << playhead;
     for (const Marker& m : project->markers) pts << m.t;
     for (const ClipPtr& c : project->clips) if (!exclude.contains(c)) pts << c->start << c->end();
-    double best = t, th = 8.0 / pps;
+    double best = t, th = AppSettings::snapPixels() / pps;
     for (double p : pts)
         for (double o : offs)
             if (std::abs(t + o - p) < th) { best = p - o; th = std::abs(t + o - p); }
@@ -142,19 +153,19 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing);
     chips.clear();
-    p.fillRect(rect(), QColor("#1e1f22"));
+    p.fillRect(rect(), tc("timelineBg"));
     for (const QString& n : project->tracks) {
         int y = trackY(n);
-        p.fillRect(0, y, width(), TRACK_H, QColor(isVideoTrack(n) ? "#26282c" : "#22262a"));
-        p.setPen(QColor("#3a3d42"));
+        p.fillRect(0, y, width(), TRACK_H, isVideoTrack(n) ? tc("trackV") : tc("trackA"));
+        p.setPen(tc("border"));
         p.drawLine(0, y + TRACK_H, width(), y + TRACK_H);
     }
     // линейка
-    p.fillRect(0, 0, width(), RULER_H, QColor("#2b2d31"));
+    p.fillRect(0, 0, width(), RULER_H, tc("window"));
     static const double steps[] = {0.1, 0.5, 1, 2, 5, 10, 30, 60, 300};
     double step = 300;
     for (double s : steps) if (s * pps >= 60) { step = s; break; }
-    p.setPen(QColor("#9aa0a6"));
+    p.setPen(tc("text").darker(130));
     p.setFont(QFont("Sans", 8));
     for (double t = std::floor(scroll / step) * step; t2x(t) < width(); t += step) {
         double x = t2x(t);
@@ -168,8 +179,8 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
         if (!project->tracks.contains(c->track)) continue;
         QRectF r = clipRect(c);
         if (r.right() < HEAD_W || r.left() > width()) continue;
-        QColor col = c->kind == "video" ? QColor("#3b6ea5") : c->kind == "image" ? QColor("#6a8f3b")
-                   : c->kind == "audio" ? QColor("#2f6f62") : QColor("#a0602f");
+        QColor col = c->kind == "video" ? tc("clipVideo") : c->kind == "image" ? tc("clipImage")
+                   : c->kind == "audio" ? tc("clipAudio") : tc("clipText");
         bool sel = selected.contains(c);
         p.setBrush(sel ? col.lighter(125) : col);
         p.setPen(QPen(sel ? QColor("#ffd54a") : QColor(0, 0, 0, 140), sel ? 2 : 1));
@@ -177,7 +188,7 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
 
         // визуализатор звука: у аудиоклипа — крупно, у видео со звуком — тонкой полосой снизу
         auto ai = project->assets.constFind(c->assetId);
-        bool hasWave = (c->kind == "audio" || (c->kind == "video" && ai != project->assets.constEnd() && ai.value().hasAudio));
+        bool hasWave = AppSettings::showWaveforms() && (c->kind == "audio" || (c->kind == "video" && ai != project->assets.constEnd() && ai.value().hasAudio));
         if (hasWave && ai != project->assets.constEnd()) {
             const QVector<float>* pk = Peaks::instance().get(ai.value().path);
             if (!pk) Peaks::instance().request(ai.value().path);
@@ -281,8 +292,8 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
     p.setFont(QFont("Sans", 9));
     for (const QString& n : project->tracks) {
         int y = trackY(n);
-        p.fillRect(0, y, HEAD_W, TRACK_H, QColor("#2b2d31"));
-        p.setPen(QColor("#d0d3d8"));
+        p.fillRect(0, y, HEAD_W, TRACK_H, tc("window"));
+        p.setPen(tc("text"));
         if (n == armed) {
             p.drawText(QRectF(32, y + 4, HEAD_W - 34, 26), Qt::AlignVCenter | Qt::AlignLeft, n + " 🎙");
             QRectF b = recButtonRect(n);
@@ -304,9 +315,9 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
     }
     // плейхед (красная линия + «ручка»)
     double x = t2x(playhead);
-    p.setPen(QPen(QColor("#ff4d4f"), 2));
+    p.setPen(QPen(tc("playhead"), 2));
     p.drawLine(QPointF(x, 0), QPointF(x, height()));
-    p.setBrush(QColor("#ff4d4f"));
+    p.setBrush(tc("playhead"));
     QPolygonF h; h << QPointF(x - 7, 0) << QPointF(x + 7, 0) << QPointF(x + 7, 9) << QPointF(x, 16) << QPointF(x - 7, 9);
     p.drawPolygon(h);
     // направляющая ножниц

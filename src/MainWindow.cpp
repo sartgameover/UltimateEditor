@@ -1,3 +1,4 @@
+#include <QLineEdit>
 #include "MainWindow.h"
 #include "PlayerView.h"
 #include "Timeline.h"
@@ -14,6 +15,10 @@
 #include "ScreenRecorder.h"
 #include "Branding.h"
 #include "AudioEngine.h"
+#include "ExtraPanels.h"
+#include "Fonts.h"
+#include "Theme.h"
+#include "AppSettings.h"
 #include <QDockWidget>
 #include <QTabWidget>
 #include <QMenuBar>
@@ -68,6 +73,39 @@ MainWindow::MainWindow() {
     dInsp = addDock("Инспектор / ключевые кадры", "dock_inspector", inspector, Qt::RightDockWidgetArea);
     dMix = addDock("Звуковой микшер", "dock_mixer", mixer, Qt::RightDockWidgetArea);
     dTl = addDock("Таймлайн", "dock_timeline", timeline, Qt::BottomDockWidgetArea);
+    // ---- дополнительные окна: в меню «Вид», по умолчанию скрыты ----
+    fxTree2 = new EffectsTree; fxTree2->setFilter("fx");
+    afxTree = new EffectsTree; afxTree->setFilter("afx");
+    anims2 = new AnimationsList;
+    fontsP = new FontsPanel;
+    scopesP = new ScopesPanel;
+    markersP = new MarkersPanel(&project);
+    propsP = new ProjectPropsPanel(&project);
+    structP = new StructurePanel(&project);
+    notesP = new NotesPanel(&project);
+    presetsP = new PresetsPanel;
+    recP = new RecorderPanel;
+    filesP = new FileBrowserPanel;
+    tcP = new TimecodePanel;
+    keysP = new HotkeysPanel;
+    statsP = new StatsPanel;
+    logP = new LogPanel;
+    addExtra("Эффекты и шейдеры", "dock_fx", fxTree2);
+    addExtra("Звуковые эффекты", "dock_afx", afxTree);
+    addExtra("Анимации", "dock_anims", anims2);
+    addExtra("Шрифты", "dock_fonts", fontsP);
+    dScopes = addExtra("Scopes: гистограмма и вектороскоп", "dock_scopes", scopesP);
+    addExtra("Маркеры", "dock_markers", markersP);
+    addExtra("Свойства проекта", "dock_props", propsP);
+    addExtra("Структура проекта", "dock_struct", structP);
+    addExtra("Заметки", "dock_notes", notesP);
+    addExtra("Мои пресеты", "dock_presets", presetsP);
+    addExtra("Запись голоса и экрана", "dock_rec", recP);
+    addExtra("Файлы компьютера", "dock_files", filesP);
+    addExtra("Таймкод", "dock_tc", tcP);
+    addExtra("Горячие клавиши", "dock_keys", keysP);
+    addExtra("Статистика", "dock_stats", statsP);
+    addExtra("Журнал", "dock_log", logP);
     defaultLayout();
     setStatusBar(new QStatusBar);
     screenRec = new ScreenRecorder(this);
@@ -165,7 +203,65 @@ MainWindow::MainWindow() {
     connect(inspector, &Inspector::aboutToChange, this, [this](QString k) { pushUndo(k); });
     connect(inspector, &Inspector::presetSaved, fxTree, &EffectsTree::rebuild);
 
+    // ---- связи дополнительных окон ----
+    connect(fxTree2, &EffectsTree::hovered, player, &PlayerView::setPreviewFx);
+    connect(fxTree2, &EffectsTree::applyEffect, this, &MainWindow::applyEffect);
+    connect(fxTree2, &EffectsTree::applyPreset, this, &MainWindow::applyPreset);
+    connect(afxTree, &EffectsTree::applyEffect, this, &MainWindow::applyEffect);
+    connect(afxTree, &EffectsTree::applyPreset, this, &MainWindow::applyPreset);
+    connect(anims2, &AnimationsList::applyAnimation, this, &MainWindow::applyAnim);
+    connect(inspector, &Inspector::presetSaved, fxTree2, &EffectsTree::rebuild);
+    connect(inspector, &Inspector::presetSaved, presetsP, &PresetsPanel::refresh);
+    connect(markersP, &MarkersPanel::seekRequested, player, &PlayerView::seek);
+    connect(markersP, &MarkersPanel::addRequested, timeline, &TimelineWidget::addMarker);
+    connect(markersP, &MarkersPanel::changed, this, [this]() { timeline->update(); });
+    connect(propsP, &ProjectPropsPanel::changed, this, [this]() { player->update(); timeline->update(); });
+    connect(structP, &StructurePanel::clipActivated, this, [this](int id) {
+        for (const ClipPtr& c : project.clips) if (c->id == id) { timeline->selectClip(c); player->seek(c->start); break; }
+    });
+    connect(presetsP, &PresetsPanel::applyPreset, this, &MainWindow::applyPreset);
+    connect(recP, &RecorderPanel::voiceRequested, this, [this]() {
+        QStringList at = project.audioTracks();
+        if (at.isEmpty()) return;
+        timeline->armTrack(timeline->armedTrack().isEmpty() ? at.first() : timeline->armedTrack());
+        statusBar()->showMessage("Дорожка " + timeline->armedTrack() + " готова: нажми красную кнопку у её названия на таймлайне", 6000);
+    });
+    connect(recP, &RecorderPanel::screenRequested, this, [this]() { startScreenRecording(); });
+    connect(recP, &RecorderPanel::stopScreenRequested, this, [this]() { stopScreenRecording(); });
+    connect(filesP, &FileBrowserPanel::fileActivated, this, [this](QString path) {
+        if (path.endsWith(".uvmvideos")) { openProjectFile(path); return; }
+        importPaths(QStringList(path), timeline->playheadTime(), mediaKind(path) == "audio" ? "A1" : "V1", true);
+    });
+    connect(fontsP, &FontsPanel::applyFont, this, [this](QString f) {
+        bool any = false;
+        for (const ClipPtr& c : timeline->selection()) {
+            if (c->kind != "text") continue;
+            if (!any) pushUndo();
+            any = true;
+            c->textFont = f;
+        }
+        if (!any) statusBar()->showMessage("Выбери текстовый клип на таймлайне", 3000);
+        else { inspector->setClip(timeline->selection().first()); player->update(); }
+    });
+    connect(player, &PlayerView::scopesFrame, scopesP, &ScopesPanel::setImage);
+    connect(dScopes, &QDockWidget::visibilityChanged, this, [this](bool v) { player->setScopesEnabled(v); });
+    connect(player, &PlayerView::textDoubleClicked, this, [this](ClipPtr c) { editTextClip(c); });
+    connect(player, &PlayerView::timeChanged, this, [this](double t) { tcP->setTime(t, project.fps); });
+    connect(statusBar(), &QStatusBar::messageChanged, this, [this](const QString& msg) { if (!msg.isEmpty()) logP->append(msg); });
+    connect(&panelTimer, &QTimer::timeout, this, [this]() {
+        if (markersP->isVisible()) markersP->refresh();
+        if (structP->isVisible()) structP->refresh();
+        if (statsP->isVisible()) {
+            statsP->setText(QString("<b>Предпросмотр:</b> %1 кадр/с<br><b>Видеокарта:</b> %2<br><b>Кадр проекта:</b> %3×%4, %5 кадр/с<br>"
+                                    "<b>Длительность:</b> %6 с<br><b>Клипов:</b> %7 · <b>Ассетов:</b> %8 · <b>Дорожек:</b> %9<br><b>Шагов отмены:</b> %10")
+                                .arg(player->previewFps(), 0, 'f', 1).arg(player->glInfo()).arg(project.W).arg(project.H).arg(project.fps)
+                                .arg(project.duration(), 0, 'f', 2).arg(project.clips.size()).arg(project.assets.size()).arg(project.tracks.size()).arg(undoStack.size()));
+        }
+    });
+    panelTimer.start(500);
+
     buildMenus();
+    keysP->setActions(allActions);
 
     connect(&autosaveTimer, &QTimer::timeout, this, &MainWindow::autosave);
     autosaveTimer.start(SettingsDialog::autosaveSeconds() * 1000);
@@ -191,6 +287,23 @@ QDockWidget* MainWindow::addDock(const QString& title, const QString& obj, QWidg
     return d;
 }
 
+QDockWidget* MainWindow::addExtra(const QString& title, const QString& obj, QWidget* w) {
+    QDockWidget* d = addDock(title, obj, w, Qt::RightDockWidgetArea);
+    extraDocks.append(d);
+    return d;
+}
+
+void MainWindow::applySettings() {
+    timeline->applySettings();
+    autosaveTimer.start(AppSettings::autosaveSec() * 1000);
+    keysP->refresh();
+    timeline->update(); player->update();
+}
+
+void MainWindow::refreshPanels() {
+    markersP->setProject(&project); propsP->setProject(&project); structP->setProject(&project); notesP->setProject(&project);
+}
+
 void MainWindow::defaultLayout() {
     for (QDockWidget* d : docks) { d->setFloating(false); removeDockWidget(d); }
     addDockWidget(Qt::LeftDockWidgetArea, dockAssets);
@@ -198,7 +311,8 @@ void MainWindow::defaultLayout() {
     addDockWidget(Qt::RightDockWidgetArea, dMix);
     addDockWidget(Qt::BottomDockWidgetArea, dTl);
     tabifyDockWidget(dInsp, dMix);
-    for (QDockWidget* d : docks) d->show();
+    for (QDockWidget* d : extraDocks) { addDockWidget(Qt::RightDockWidgetArea, d); tabifyDockWidget(dInsp, d); d->hide(); }
+    for (QDockWidget* d : docks) if (!extraDocks.contains(d)) d->show();       // основные: плеер, ассеты, инспектор, микшер, таймлайн
     dInsp->raise();
     resizeDocks({dockAssets, dInsp}, {320, 360}, Qt::Horizontal);
     resizeDocks({dTl}, {320}, Qt::Vertical);
@@ -212,6 +326,11 @@ void MainWindow::buildMenus() {
         for (const QString& k : keys) ks << QKeySequence(k);
         if (!ks.isEmpty()) { a->setShortcuts(ks); a->setShortcutContext(Qt::ApplicationShortcut); }
         connect(a, &QAction::triggered, this, [fn]() { fn(); });
+        if (QSettings("UltimateEditor", "UltimateEditor").contains("shortcut/" + text)) {          // свои сочетания из настроек
+            a->setShortcut(QKeySequence(AppSettings::get("shortcut/" + text).toString()));
+            a->setShortcutContext(Qt::ApplicationShortcut);
+        }
+        allActions.append(a);
         addAction(a);
         return a;
     };
@@ -225,9 +344,9 @@ void MainWindow::buildMenus() {
     mf->addAction(act("Экспорт…", {"Ctrl+E", "Ctrl+M"}, [this]() { exportDialog(); }));
     mf->addSeparator();
     mf->addAction(act("Восстановить автосохранение", {}, [this]() { recover(); }));
-    mf->addAction(act("Настройки (микрофон…)", {"Ctrl+,"}, [this]() {
-        SettingsDialog d(this);
-        if (d.exec()) autosaveTimer.start(SettingsDialog::autosaveSeconds() * 1000);
+    mf->addAction(act("Настройки программы…", {"Ctrl+,"}, [this]() {
+        SettingsDialog d(this, allActions);
+        if (d.exec()) applySettings();
     }));
     mf->addAction(act("Выход", {"Ctrl+Q"}, [this]() { close(); }));
 
@@ -271,7 +390,10 @@ void MainWindow::buildMenus() {
     mp->addAction(act("В конец", {"End"}, [this]() { player->seek(project.duration()); }));
 
     QMenu* mv = menuBar()->addMenu("Вид");
-    for (QDockWidget* d : docks) mv->addAction(d->toggleViewAction());
+    QAction* playerToggle = mv->addAction("Плеер (монитор)");
+    playerToggle->setCheckable(true); playerToggle->setChecked(true);
+    connect(playerToggle, &QAction::toggled, this, [this](bool on) { centralWidget()->setVisible(on); });
+    for (QDockWidget* d : docks) mv->addAction(d->toggleViewAction());                 // 20 окон: включай и выключай
     mv->addSeparator();
     QMenu* place = mv->addMenu("Расположить окно");
     for (QDockWidget* d : docks) {
@@ -304,6 +426,7 @@ void MainWindow::buildMenus() {
     for (int i = 0; i < tabs.size(); ++i)
         sub->addAction(act(tabs[i], {}, [this, i]() { dockAssets->show(); dockAssets->raise(); assetTabs->setCurrentIndex(i); }));
     mv->addAction(act("Показать все окна", {}, [this]() { showAllDocks(); }));
+    mv->addAction(act("Только основные окна", {}, [this]() { defaultLayout(); }));
     QMenu* ml = mv->addMenu("Раскладки окон");
     connect(ml, &QMenu::aboutToShow, this, [this, ml]() {
         ml->clear();
@@ -366,7 +489,7 @@ void MainWindow::showAllDocks() {
 void MainWindow::pushUndo(const QString& key) {
     if (!key.isEmpty() && key == undoKey && undoClock.isValid() && undoClock.elapsed() < 1000) { undoClock.restart(); return; }
     undoStack.append(project.toBytes());
-    if (undoStack.size() > 100) undoStack.removeFirst();
+    while (undoStack.size() > AppSettings::undoLimit()) undoStack.removeFirst();
     redoStack.clear();
     undoKey = key;
     undoClock.restart();
@@ -383,6 +506,7 @@ void MainWindow::restore(const QByteArray& snap) {
     inspector->setClip(ClipPtr());
     player->setSelected(ClipPtr());
     refreshAssets();
+    refreshPanels();
     transport->setTime(player->time(), project.duration());
     player->update();
 }
@@ -493,6 +617,7 @@ void MainWindow::setProject() {
     for (auto it = project.assets.constBegin(); it != project.assets.constEnd(); ++it)
         if (it.value().hasAudio) Peaks::instance().request(it.value().path);
     undoStack.clear(); redoStack.clear();
+    refreshPanels();
     transport->setTime(0, project.duration());
     setWindowTitle("Ultimate Video Editor" + (project.path.isEmpty() ? QString() : " — " + QFileInfo(project.path).fileName()));
 }
@@ -556,9 +681,9 @@ void MainWindow::importPaths(const QStringList& paths, double t, const QString& 
         }
         if (toTimeline) {
             project.addClipsForAsset(asset, t, project.tracks.contains(track) ? track : QString("V1"));
-            t += asset.kind == "image" ? 5.0 : asset.duration;
+            t += asset.kind == "image" ? AppSettings::imageDuration() : asset.duration;
         }
-        if (asset.kind == "video" && asset.h > 1440) makeProxy(asset.id);
+        if (asset.kind == "video" && asset.h > AppSettings::proxyThreshold()) makeProxy(asset.id);
     }
     transport->setTime(player->time(), project.duration());
     timeline->update();
@@ -664,6 +789,7 @@ void MainWindow::addText(double t) {
     if (!ok || txt.isEmpty()) return;
     pushUndo();
     ClipPtr c = project.addTextClip(txt, t, 3.0);
+    c->props["y"] = 0.3;                                       // текст сразу в нижней трети кадра; двигается мышью в плеере
     timeline->selectClip(c);
     transport->setTime(player->time(), project.duration());
     player->update();
